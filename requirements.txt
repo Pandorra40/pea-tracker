@@ -1,5 +1,4 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.express as px
-import time  # 
+streamlit
+yfinance>=0.2.40
+pandas
+plotly
