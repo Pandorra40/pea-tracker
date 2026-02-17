@@ -22,48 +22,61 @@ if 'mon_portefeuille' not in st.session_state:
 # ==========================================
 # 2. RÉCUPÉRATION DES DONNÉES (YFINANCE)
 # ==========================================
-@st.cache_data(ttl=300) # Mise en cache 5 min pour éviter de bloquer
+# ==========================================
+# 2. RÉCUPÉRATION DES DONNÉES (CORRIGÉ & ROBUSTE)
+# ==========================================
+@st.cache_data(ttl=300)
 def load_financial_data(ticker_list):
-    # 1. Historique pour le graphique (Bulk download)
-    # On ajoute auto_adjust=True pour éviter les soucis de split/dividendes
     full_tickers = ticker_list + ['^FCHI']
-    df_history = yf.download(full_tickers, period="1y", auto_adjust=True)['Close']
     
-    # Si le téléchargement renvoie un MultiIndex (nouveau format yfinance), on aplatit
-    if isinstance(df_history.columns, pd.MultiIndex):
-        df_history.columns = df_history.columns.get_level_values(0)
-
-    # 2. Récupération précise des infos et du DERNIER PRIX
-    infos = {}
+    # On télécharge 5 jours pour être sûr d'avoir de la donnée même si jour férié/WE
+    # group_by='ticker' est crucial pour éviter le multi-index mal formaté
+    data = yf.download(full_tickers, period="5d", group_by='ticker', auto_adjust=True)
+    
+    df_close = pd.DataFrame()
     last_prices_dict = {}
+    infos = {}
 
-    for t in ticker_list:
+    # Reconstruction propre des données
+    for t in full_tickers:
+        try:
+            # Récupération de la colonne Close pour l'historique
+            # On gère le cas où yfinance renvoie une Series ou un DataFrame
+            if isinstance(data, pd.DataFrame) and t in data.columns:
+                 series = data[t]['Close']
+            elif isinstance(data, pd.DataFrame) and ('Close', t) in data.columns:
+                 series = data[('Close', t)]
+            else:
+                 # Fallback structure complexe
+                 series = data.xs(t, axis=1, level=0)['Close']
+            
+            # Nettoyage historique
+            df_close[t] = series
+            
+            # PRIX ACTUEL : On prend la dernière valeur NON VIDE (dropna)
+            # C'est ça qui évitera le 0.00 €
+            last_price = series.dropna().iloc[-1]
+            last_prices_dict[t] = last_price
+            
+        except Exception:
+            last_prices_dict[t] = 0.0
+            df_close[t] = 0.0
+
+    # Récupération des infos fondamentales (Target/Payout)
+    # On le fait séquentiellement mais avec une protection
+    tickers_only = [t for t in ticker_list]
+    for t in tickers_only:
         try:
             tk = yf.Ticker(t)
-            
-            # Récupération du prix actuel via fast_info (plus rapide et fiable que history)
-            # Si fast_info échoue, on tente history
-            try:
-                price = tk.fast_info['last_price']
-            except:
-                hist = tk.history(period="1d")
-                price = hist['Close'].iloc[-1] if not hist.empty else 0
-            
-            last_prices_dict[t] = price
-            
-            # Récupération des infos fondamentales
             inf = tk.info
             infos[t] = {
                 'target': inf.get('targetMeanPrice', 0),
                 'payout': inf.get('payoutRatio', 0) * 100 if inf.get('payoutRatio') else 0
             }
-        except Exception as e:
-            # En cas d'erreur sur une action, on met des valeurs par défaut pour ne pas tout casser
-            last_prices_dict[t] = 0
+        except:
             infos[t] = {'target': 0, 'payout': 0}
-            print(f"Erreur sur {t}: {e}")
-
-    return df_history, infos, last_prices_dict
+            
+    return df_close, infos, last_prices_dict
 
 tickers = list(st.session_state.mon_portefeuille.keys())
 df_prices, fund_data, last_prices = load_financial_data(tickers)
@@ -197,3 +210,4 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
