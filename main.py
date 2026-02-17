@@ -21,60 +21,78 @@ if 'mon_portefeuille' not in st.session_state:
     }
 
 # ==========================================
-# 2. RÉCUPÉRATION DES DONNÉES (VERSION FINALE + TARGETS FIX)
+# 2. RÉCUPÉRATION DES DONNÉES (BLINDÉE CLOUD)
 # ==========================================
-@st.cache_data(ttl=3600)
+import time # Assurance que l'import est là
+
+@st.cache_data(ttl=900) # Cache 15 min
 def load_financial_data(ticker_list):
     full_tickers = ticker_list + ['^FCHI']
     
-    # 1. PRIX : Téléchargement groupé
-    data = yf.download(full_tickers, period="1y", group_by='ticker', auto_adjust=True)
-    
-    df_close = pd.DataFrame()
-    last_prices_dict = {}
+    # --- A. HISTORIQUE (Pour le Graphique) ---
+    # On télécharge en vrac pour le graph
+    df_history = pd.DataFrame()
+    try:
+        data = yf.download(full_tickers, period="1y", group_by='ticker', auto_adjust=True)
+        # Nettoyage du format complexe de Yahoo
+        for t in full_tickers:
+            try:
+                # Gestion des différents formats de colonnes renvoyés par Yahoo
+                if isinstance(data, pd.DataFrame):
+                    if t in data.columns and isinstance(data[t], pd.DataFrame):
+                        series = data[t]['Close']
+                    elif ('Close', t) in data.columns:
+                        series = data[('Close', t)]
+                    else:
+                        series = data.xs(t, axis=1, level=0)['Close']
+                df_history[t] = series.ffill().bfill() # On bouche les trous
+            except:
+                df_history[t] = 0.0
+    except Exception as e:
+        st.error(f"Erreur historique: {e}")
+
+    # --- B. PRIX ACTUELS & INFOS (Pour le Tableau) ---
+    # On le fait un par un, c'est plus lent mais plus fiable sur le Cloud
     infos = {}
+    last_prices_dict = {}
 
-    # Reconstruction des prix
-    for t in full_tickers:
-        try:
-            if isinstance(data, pd.DataFrame):
-                if t in data.columns and isinstance(data[t], pd.DataFrame):
-                    series = data[t]['Close']
-                elif ('Close', t) in data.columns:
-                    series = data[('Close', t)]
-                else:
-                    series = data.xs(t, axis=1, level=0)['Close']
-            
-            # Nettoyage
-            series = series.ffill().bfill()
-            df_close[t] = series
-            last_prices_dict[t] = series.iloc[-1]
-            
-        except Exception:
-            last_prices_dict[t] = 0.0
-            df_close[t] = 0.0
-
-    # 2. INFOS (Targets) : Boucle ralentie
-    tickers_only = [t for t in ticker_list]
-    for t in tickers_only:
+    for t in ticker_list:
         try:
             tk = yf.Ticker(t)
-            time.sleep(0.1)  # Petite pause
+            
+            # PAUSE ANTI-BAN (Très important sur le Cloud)
+            time.sleep(0.1) 
+            
+            # 1. Tentative via fast_info (Le plus fiable pour le prix temps réel)
+            try:
+                price = tk.fast_info['last_price']
+            except:
+                # 2. Fallback sur l'historique du jour si fast_info échoue
+                hist = tk.history(period="1d")
+                if not hist.empty:
+                    price = hist['Close'].iloc[-1]
+                else:
+                    price = st.session_state.mon_portefeuille[t]['pru'] # Ultime secours : on affiche le PRU pour éviter le NaN
+            
+            last_prices_dict[t] = float(price) if price is not None else 0.0
+
+            # 3. Récupération des infos fondamentales
             inf = tk.info
-            target = inf.get('targetMeanPrice', inf.get('targetMedianPrice', 0))
             infos[t] = {
-                'target': target if target is not None else 0,
+                'target': inf.get('targetMeanPrice', 0),
                 'payout': inf.get('payoutRatio', 0) * 100 if inf.get('payoutRatio') else 0
             }
-        except Exception:
-            infos[t] = {'target': 0, 'payout': 0}
             
-    return df_close, infos, last_prices_dict
+        except Exception:
+            # Si tout plante, on met des valeurs par défaut pour ne pas crasher l'app
+            last_prices_dict[t] = st.session_state.mon_portefeuille[t]['pru']
+            infos[t] = {'target': 0, 'payout': 0}
 
-# --- C'EST ICI QUE VOUS AVIEZ L'ERREUR (CES LIGNES SONT OBLIGATOIRES) ---
+    return df_history, infos, last_prices_dict
+
+# --- APPEL DE LA FONCTION (NE PAS OUBLIER CES LIGNES) ---
 tickers = list(st.session_state.mon_portefeuille.keys())
 df_prices, fund_data, last_prices = load_financial_data(tickers)
-# ------------------------------------------------------------------------
 
 # ==========================================
 # 3. CALCULS FINANCIERS GLOBAUX
@@ -215,6 +233,7 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
 
 
 
