@@ -5,91 +5,83 @@ import plotly.express as px
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="Mon PEA (Via Google Sheets)", layout="wide")
+st.set_page_config(page_title="Mon PEA", layout="wide")
 
-# ---------------------------------------------------------
-# ⬇️ COLLEZ VOTRE LIEN GOOGLE SHEET (CSV) ICI ⬇️
-# ---------------------------------------------------------
+# Remplacez bien VOTRE_LIEN_ICI par votre lien se terminant par output=csv
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQThkmN-VWRHc-R-DP97YXuTIqshxmPK5twHitZvfeLPcpzk_VJ6Z_KgIlA-Oah71v7iiJ96UPbVoOD/pub?output=csv" 
-# ---------------------------------------------------------
 
 @st.cache_data(ttl=60)
 def load_data():
-    if "VOTRE_LIEN" in SHEET_URL or not SHEET_URL.startswith("http"):
+    if "VOTRE_LIEN" in SHEET_URL:
         return None
     try:
-        # Lecture du CSV
         df = pd.read_csv(SHEET_URL)
         
-        # Nettoyage automatique des noms de colonnes (enlève espaces et met en minuscule)
+        # Nettoyage des noms de colonnes pour correspondre à votre fichier
         df.columns = df.columns.str.strip()
         
-        # Mapping pour tolérer différentes écritures
+        # Mapping spécifique à votre fichier (Gestion de l'accent sur Qté)
         mapping = {
-            'nom': 'Nom', 'action': 'Nom',
-            'secteur': 'Secteur',
-            'qte': 'Qte', 'quantité': 'Qte', 'quantite': 'Qte',
-            'pru': 'PRU',
-            'div': 'Div', 'dividende': 'Div',
-            'cours': 'Cours', 'prix': 'Cours'
+            'Qté': 'Qte',
+            'Nom': 'Nom',
+            'Secteur': 'Secteur',
+            'PRU': 'PRU',
+            'Div': 'Div',
+            'Cours': 'Cours'
         }
-        df = df.rename(columns={c: mapping[c.lower()] for c in df.columns if c.lower() in mapping})
-
-        # Nettoyage des données numériques
-        cols_num = ['Qte', 'PRU', 'Div', 'Cours']
-        for col in cols_num:
-            if col in df.columns:
-                if df[col].dtype == object:
-                    df[col] = df[col].astype(str).str.replace(',', '.').str.replace('€', '').str.strip()
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            else:
-                st.error(f"La colonne '{col}' est manquante dans votre fichier Google Sheets.")
-                return None
+        df = df.rename(columns=mapping)
         
-        return df.dropna(subset=['Nom']) # Supprime les lignes vides
+        # On ne garde que les colonnes utiles pour recalculer proprement
+        cols_needed = ['Nom', 'Qte', 'PRU', 'Secteur', 'Div', 'Cours']
+        df = df[cols_needed]
+
+        # Conversion numérique (nettoyage des virgules et symboles)
+        for col in ['Qte', 'PRU', 'Div', 'Cours']:
+            df[col] = df[col].astype(str).str.replace(',', '.').str.replace('€', '').str.strip()
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        return df.dropna(subset=['Nom'])
     except Exception as e:
-        st.error(f"Détail de l'erreur : {e}")
+        st.error(f"Erreur de lecture : {e}")
         return None
 
 df = load_data()
 
 # ==========================================
-# 2. INTERFACE ET CALCULS
+# 2. CALCULS PROPRES (Ignore les #VALUE! de Sheets)
 # ==========================================
-st.title("🚀 Tracker PEA (Google Sheet Edition)")
+if df is not None:
+    df['Val. Initiale'] = df['Qte'] * df['PRU']
+    df['Val. Actuelle'] = df['Qte'] * df['Cours']
+    df['Plus-Value €'] = df['Val. Actuelle'] - df['Val. Initiale']
+    df['Plus-Value %'] = (df['Plus-Value €'] / df['Val. Initiale']) * 100
+    df['Div. Totaux'] = df['Qte'] * df['Div']
 
-if df is None:
-    st.info("💡 **Aide :** Vérifiez que vous avez bien fait 'Fichier' > 'Partager' > 'Publier sur le web' > Format 'CSV' dans Google Sheets.")
-    st.stop()
+    # --- INTERFACE ---
+    st.title("🚀 Mon Portefeuille PEA")
 
-# Calculs
-df['Val. Initiale'] = df['Qte'] * df['PRU']
-df['Val. Actuelle'] = df['Qte'] * df['Cours']
-df['Plus-Value €'] = df['Val. Actuelle'] - df['Val. Initiale']
-df['Plus-Value %'] = ((df['Val. Actuelle'] / df['Val. Initiale']) - 1) * 100
-df['Div. 5 Ans'] = df['Qte'] * df['Div'] * 5
+    # KPI
+    t_inv = df['Val. Initiale'].sum()
+    t_act = df['Val. Actuelle'].sum()
+    pv_totale = t_act - t_inv
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Investi", f"{t_inv:,.2f} €")
+    c2.metric("Valeur Actuelle", f"{t_act:,.2f} €", f"{pv_totale:+.2f} €")
+    c3.metric("Performance", f"{(pv_totale/t_inv*100):+.2f} %")
 
-# KPI
-t_inv, t_act = df['Val. Initiale'].sum(), df['Val. Actuelle'].sum()
-pv_t = t_act - t_inv
-perf = (pv_t / t_inv) * 100 if t_inv != 0 else 0
+    # Graphiques
+    g1, g2 = st.columns(2)
+    with g1:
+        st.plotly_chart(px.pie(df, values='Val. Actuelle', names='Nom', title="Poids des lignes", hole=0.4), use_container_width=True)
+    with g2:
+        st.plotly_chart(px.bar(df, x='Nom', y='Plus-Value %', color='Plus-Value %', title="Performance par Action (in %)"), use_container_width=True)
 
-k1, k2, k3 = st.columns(3)
-k1.metric("Valeur Portefeuille", f"{t_act:,.2f} €", f"{pv_t:+.2f} €")
-k2.metric("Performance Globale", f"{perf:+.2f} %")
-k3.metric("Dividendes prévus (5 ans)", f"{df['Div. 5 Ans'].sum():,.2f} €")
-
-# Graphiques
-c1, c2 = st.columns(2)
-with c1:
-    st.plotly_chart(px.pie(df, values='Val. Actuelle', names='Nom', title="Répartition par Action", hole=0.4), use_container_width=True)
-with c2:
-    df_s = df.groupby('Secteur')['Val. Actuelle'].sum().reset_index()
-    st.plotly_chart(px.pie(df_s, values='Val. Actuelle', names='Secteur', title="Répartition Sectorielle"), use_container_width=True)
-
-# Tableau
-st.subheader("📋 Détail des positions")
-st.dataframe(df.style.format({
-    "Cours": "{:.2f} €", "PRU": "{:.2f} €", "Plus-Value €": "{:+.2f} €", "Plus-Value %": "{:+.2f} %"
-}), use_container_width=True, hide_index=True)
-
+    # Tableau détaillé
+    st.subheader("📋 Analyse détaillée")
+    st.dataframe(df.style.format({
+        "Cours": "{:.2f} €", "PRU": "{:.2f} €", "Val. Actuelle": "{:.2f} €", 
+        "Plus-Value €": "{:+.2f} €", "Plus-Value %": "{:+.2f} %"
+    }), use_container_width=True, hide_index=True)
+else:
+    st.warning("En attente du lien Google Sheets valide...")
