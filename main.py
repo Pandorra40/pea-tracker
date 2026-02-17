@@ -20,50 +20,48 @@ if 'mon_portefeuille' not in st.session_state:
     }
 
 # ==========================================
-# 2. RÉCUPÉRATION DES DONNÉES (YFINANCE)
+# 2. RÉCUPÉRATION DES DONNÉES (CORRIGÉ FINAL)
 # ==========================================
-# ==========================================
-# 2. RÉCUPÉRATION DES DONNÉES (CORRIGÉ & ROBUSTE)
-# ==========================================
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600) # On remet 1h de cache car on charge 1 an de données
 def load_financial_data(ticker_list):
     full_tickers = ticker_list + ['^FCHI']
     
-    # On télécharge 5 jours pour être sûr d'avoir de la donnée même si jour férié/WE
-    # group_by='ticker' est crucial pour éviter le multi-index mal formaté
-    data = yf.download(full_tickers, period="5d", group_by='ticker', auto_adjust=True)
+    # ON REPASSE À 1 AN (1y) pour avoir un beau graphique
+    data = yf.download(full_tickers, period="1y", group_by='ticker', auto_adjust=True)
     
     df_close = pd.DataFrame()
     last_prices_dict = {}
     infos = {}
 
-    # Reconstruction propre des données
+    # Reconstruction propre
     for t in full_tickers:
         try:
-            # Récupération de la colonne Close pour l'historique
-            # On gère le cas où yfinance renvoie une Series ou un DataFrame
-            if isinstance(data, pd.DataFrame) and t in data.columns:
-                 series = data[t]['Close']
-            elif isinstance(data, pd.DataFrame) and ('Close', t) in data.columns:
-                 series = data[('Close', t)]
-            else:
-                 # Fallback structure complexe
-                 series = data.xs(t, axis=1, level=0)['Close']
+            # Extraction sécurisée de la colonne 'Close'
+            if isinstance(data, pd.DataFrame):
+                if t in data.columns and isinstance(data[t], pd.DataFrame):
+                    series = data[t]['Close']
+                elif ('Close', t) in data.columns:
+                    series = data[('Close', t)]
+                else:
+                    # Tentative générique si la structure change
+                    series = data.xs(t, axis=1, level=0)['Close']
             
-            # Nettoyage historique
+            # NETTOYAGE CRUCIAL : On remplit les trous (jours fériés, bugs API)
+            # ffill() propage la dernière valeur connue vers l'avant
+            series = series.ffill().bfill()
+            
             df_close[t] = series
             
-            # PRIX ACTUEL : On prend la dernière valeur NON VIDE (dropna)
-            # C'est ça qui évitera le 0.00 €
-            last_price = series.dropna().iloc[-1]
-            last_prices_dict[t] = last_price
+            # PRIX ACTUEL : On prend la toute dernière valeur de la série nettoyée
+            last_prices_dict[t] = series.iloc[-1]
             
-        except Exception:
+        except Exception as e:
+            # En cas de crash total sur une action
+            print(f"Erreur {t}: {e}")
             last_prices_dict[t] = 0.0
             df_close[t] = 0.0
 
-    # Récupération des infos fondamentales (Target/Payout)
-    # On le fait séquentiellement mais avec une protection
+    # Récupération des infos fondamentales
     tickers_only = [t for t in ticker_list]
     for t in tickers_only:
         try:
@@ -116,9 +114,19 @@ m4.metric("Marge de hausse (Target)", f"+{upside_total:.1f} %")
 
 # --- GRAPHIQUE PERFORMANCE ---
 st.subheader("Comparaison Performance (Base 100)", divider="rainbow")
-weights = {t: (st.session_state.mon_portefeuille[t]['qte'] * st.session_state.mon_portefeuille[t]['pru']) / total_achat for t in tickers}
-port_idx = (df_prices[tickers].pct_change().dropna() @ pd.Series(weights)).add(1).cumprod() * 100
-cac_idx = df_prices['^FCHI'].pct_change().dropna().add(1).cumprod() * 100
+
+# On s'assure que les poids sont alignés avec les colonnes disponibles
+weights = pd.Series({t: (st.session_state.mon_portefeuille[t]['qte'] * st.session_state.mon_portefeuille[t]['pru']) / total_achat for t in tickers})
+
+# Calcul de la performance
+# On utilise df_prices[tickers] pour s'assurer de l'ordre
+# .fillna(0) évite que le graphique plante s'il manque une donnée au début
+port_perf = df_prices[tickers].pct_change().fillna(0)
+port_idx = (port_perf @ weights).add(1).cumprod() * 100
+
+cac_perf = df_prices['^FCHI'].pct_change().fillna(0)
+cac_idx = cac_perf.add(1).cumprod() * 100
+
 st.line_chart(pd.DataFrame({'Mon Portefeuille': port_idx, 'CAC 40': cac_idx}))
 
 # --- ONGLETS D'ANALYSE ---
@@ -210,4 +218,5 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
 
