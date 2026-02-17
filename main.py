@@ -22,25 +22,51 @@ if 'mon_portefeuille' not in st.session_state:
 # ==========================================
 # 2. RÉCUPÉRATION DES DONNÉES (YFINANCE)
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300) # Mise en cache 5 min pour éviter de bloquer
 def load_financial_data(ticker_list):
-    df_history = yf.download(ticker_list + ['^FCHI'], period="1y")['Close']
+    # 1. Historique pour le graphique (Bulk download)
+    # On ajoute auto_adjust=True pour éviter les soucis de split/dividendes
+    full_tickers = ticker_list + ['^FCHI']
+    df_history = yf.download(full_tickers, period="1y", auto_adjust=True)['Close']
+    
+    # Si le téléchargement renvoie un MultiIndex (nouveau format yfinance), on aplatit
+    if isinstance(df_history.columns, pd.MultiIndex):
+        df_history.columns = df_history.columns.get_level_values(0)
+
+    # 2. Récupération précise des infos et du DERNIER PRIX
     infos = {}
+    last_prices_dict = {}
+
     for t in ticker_list:
         try:
             tk = yf.Ticker(t)
+            
+            # Récupération du prix actuel via fast_info (plus rapide et fiable que history)
+            # Si fast_info échoue, on tente history
+            try:
+                price = tk.fast_info['last_price']
+            except:
+                hist = tk.history(period="1d")
+                price = hist['Close'].iloc[-1] if not hist.empty else 0
+            
+            last_prices_dict[t] = price
+            
+            # Récupération des infos fondamentales
             inf = tk.info
             infos[t] = {
                 'target': inf.get('targetMeanPrice', 0),
-                'payout': inf.get('payoutRatio', 0) * 100
+                'payout': inf.get('payoutRatio', 0) * 100 if inf.get('payoutRatio') else 0
             }
-        except:
+        except Exception as e:
+            # En cas d'erreur sur une action, on met des valeurs par défaut pour ne pas tout casser
+            last_prices_dict[t] = 0
             infos[t] = {'target': 0, 'payout': 0}
-    return df_history, infos
+            print(f"Erreur sur {t}: {e}")
+
+    return df_history, infos, last_prices_dict
 
 tickers = list(st.session_state.mon_portefeuille.keys())
-df_prices, fund_data = load_financial_data(tickers)
-last_prices = df_prices[tickers].iloc[-1]
+df_prices, fund_data, last_prices = load_financial_data(tickers)
 
 # ==========================================
 # 3. CALCULS FINANCIERS GLOBAUX
@@ -169,4 +195,5 @@ with st.sidebar:
     st.subheader("🔄 Actions")
     if st.button("Actualiser les données"):
         st.cache_data.clear()
+
         st.rerun()
