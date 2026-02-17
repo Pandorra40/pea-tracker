@@ -20,64 +20,63 @@ if 'mon_portefeuille' not in st.session_state:
     }
 
 # ==========================================
-# 2. RÉCUPÉRATION DES DONNÉES (CORRIGÉ FINAL)
+# 2. RÉCUPÉRATION DES DONNÉES (VERSION FINALE + TARGETS FIX)
 # ==========================================
-@st.cache_data(ttl=3600) # On remet 1h de cache car on charge 1 an de données
+@st.cache_data(ttl=3600)
 def load_financial_data(ticker_list):
     full_tickers = ticker_list + ['^FCHI']
     
-    # ON REPASSE À 1 AN (1y) pour avoir un beau graphique
+    # 1. PRIX : Téléchargement groupé (rapide et fiable)
     data = yf.download(full_tickers, period="1y", group_by='ticker', auto_adjust=True)
     
     df_close = pd.DataFrame()
     last_prices_dict = {}
     infos = {}
 
-    # Reconstruction propre
+    # Reconstruction des prix
     for t in full_tickers:
         try:
-            # Extraction sécurisée de la colonne 'Close'
             if isinstance(data, pd.DataFrame):
                 if t in data.columns and isinstance(data[t], pd.DataFrame):
                     series = data[t]['Close']
                 elif ('Close', t) in data.columns:
                     series = data[('Close', t)]
                 else:
-                    # Tentative générique si la structure change
                     series = data.xs(t, axis=1, level=0)['Close']
             
-            # NETTOYAGE CRUCIAL : On remplit les trous (jours fériés, bugs API)
-            # ffill() propage la dernière valeur connue vers l'avant
+            # Nettoyage
             series = series.ffill().bfill()
-            
             df_close[t] = series
-            
-            # PRIX ACTUEL : On prend la toute dernière valeur de la série nettoyée
             last_prices_dict[t] = series.iloc[-1]
             
-        except Exception as e:
-            # En cas de crash total sur une action
-            print(f"Erreur {t}: {e}")
+        except Exception:
             last_prices_dict[t] = 0.0
             df_close[t] = 0.0
 
-    # Récupération des infos fondamentales
+    # 2. INFOS (Targets) : Boucle ralentie pour éviter le blocage Yahoo
     tickers_only = [t for t in ticker_list]
     for t in tickers_only:
         try:
             tk = yf.Ticker(t)
+            
+            # --- LA PAUSE MAGIQUE ANTI-BOT ---
+            time.sleep(0.2) 
+            # ---------------------------------
+            
             inf = tk.info
+            
+            # On cherche plusieurs clés possibles car Yahoo change parfois de nom
+            target = inf.get('targetMeanPrice', inf.get('targetMedianPrice', 0))
+            
             infos[t] = {
-                'target': inf.get('targetMeanPrice', 0),
+                'target': target if target is not None else 0,
                 'payout': inf.get('payoutRatio', 0) * 100 if inf.get('payoutRatio') else 0
             }
-        except:
+        except Exception as e:
+            # En cas d'échec silencieux
             infos[t] = {'target': 0, 'payout': 0}
             
     return df_close, infos, last_prices_dict
-
-tickers = list(st.session_state.mon_portefeuille.keys())
-df_prices, fund_data, last_prices = load_financial_data(tickers)
 
 # ==========================================
 # 3. CALCULS FINANCIERS GLOBAUX
@@ -218,5 +217,6 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
 
 
