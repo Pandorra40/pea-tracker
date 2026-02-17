@@ -10,7 +10,6 @@ st.set_page_config(page_title="Mon PEA (Via Google Sheets)", layout="wide")
 # ---------------------------------------------------------
 # ⬇️ COLLEZ VOTRE LIEN GOOGLE SHEET (CSV) ICI ENTRE LES GUILLEMETS ⬇️
 # Exemple : "https://docs.google.com/spreadsheets/d/e/2PACX-1vQThkmN-VWRHc-R-DP97YXuTIqshxmPK5twHitZvfeLPcpzk_VJ6Z_KgIlA-Oah71v7iiJ96UPbVoOD/pub?gid=914521031&single=true&output=csv"
-SHEET_URL = "VOTRE_LIEN_GOOGLE_SHEET_ICI" 
 # ---------------------------------------------------------
 
 # ==========================================
@@ -109,4 +108,5 @@ st.dataframe(
 if st.button("🔄 Actualiser"):
     st.cache_data.clear()
     st.rerun()
+
 
