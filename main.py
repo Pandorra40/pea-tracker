@@ -27,7 +27,7 @@ if 'mon_portefeuille' not in st.session_state:
 def load_financial_data(ticker_list):
     full_tickers = ticker_list + ['^FCHI']
     
-    # 1. PRIX : Téléchargement groupé (rapide et fiable)
+    # 1. PRIX : Téléchargement groupé
     data = yf.download(full_tickers, period="1y", group_by='ticker', auto_adjust=True)
     
     df_close = pd.DataFrame()
@@ -54,30 +54,27 @@ def load_financial_data(ticker_list):
             last_prices_dict[t] = 0.0
             df_close[t] = 0.0
 
-    # 2. INFOS (Targets) : Boucle ralentie pour éviter le blocage Yahoo
+    # 2. INFOS (Targets) : Boucle ralentie
     tickers_only = [t for t in ticker_list]
     for t in tickers_only:
         try:
             tk = yf.Ticker(t)
-            
-            # --- LA PAUSE MAGIQUE ANTI-BOT ---
-            time.sleep(0.2) 
-            # ---------------------------------
-            
+            time.sleep(0.1)  # Petite pause
             inf = tk.info
-            
-            # On cherche plusieurs clés possibles car Yahoo change parfois de nom
             target = inf.get('targetMeanPrice', inf.get('targetMedianPrice', 0))
-            
             infos[t] = {
                 'target': target if target is not None else 0,
                 'payout': inf.get('payoutRatio', 0) * 100 if inf.get('payoutRatio') else 0
             }
-        except Exception as e:
-            # En cas d'échec silencieux
+        except Exception:
             infos[t] = {'target': 0, 'payout': 0}
             
     return df_close, infos, last_prices_dict
+
+# --- C'EST ICI QUE VOUS AVIEZ L'ERREUR (CES LIGNES SONT OBLIGATOIRES) ---
+tickers = list(st.session_state.mon_portefeuille.keys())
+df_prices, fund_data, last_prices = load_financial_data(tickers)
+# ------------------------------------------------------------------------
 
 # ==========================================
 # 3. CALCULS FINANCIERS GLOBAUX
@@ -218,6 +215,7 @@ with st.sidebar:
         st.cache_data.clear()
 
         st.rerun()
+
 
 
 
