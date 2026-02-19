@@ -2,13 +2,24 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
 
 # ==========================================
-# 1. CONFIGURATION ET SESSION STATE
+# 1. CONFIGURATION ET SECURITE
 # ==========================================
-st.set_page_config(page_title="Mon Tracker PEA Long Terme", layout="wide", initial_sidebar_state="collapsed")
+# Le paramètre menu_items permet de personnaliser/masquer certains liens d'aide
+st.set_page_config(
+    page_title="Mon Tracker PEA Long Terme", 
+    layout="wide", 
+    initial_sidebar_state="collapsed",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': "Tracker PEA v2.0 - Focus Sécurité et Performance"
+    }
+)
 
-# Initialisation du portefeuille (Données à jour avec Sartorius)
+# Initialisation sécurisée du portefeuille
 if 'mon_portefeuille' not in st.session_state:
     st.session_state.mon_portefeuille = {
         'AI.PA':  {'nom': 'Air Liquide', 'qte': 2, 'pru': 161.64, 'div': 3.20, 'secteur': 'Industrie'},
@@ -22,24 +33,37 @@ if 'mon_portefeuille' not in st.session_state:
 # ==========================================
 # 2. RÉCUPÉRATION DES DONNÉES (YFINANCE)
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner="Récupération des cours en cours...")
 def load_financial_data(ticker_list):
-    df_history = yf.download(ticker_list + ['^FCHI'], period="1y")['Close']
-    infos = {}
-    for t in ticker_list:
-        try:
-            tk = yf.Ticker(t)
-            inf = tk.info
-            infos[t] = {
-                'target': inf.get('targetMeanPrice', 0),
-                'payout': inf.get('payoutRatio', 0) * 100
-            }
-        except:
-            infos[t] = {'target': 0, 'payout': 0}
-    return df_history, infos
+    try:
+        # download avec progress=False pour éviter les logs inutiles en console
+        df_history = yf.download(ticker_list + ['^FCHI'], period="1y", progress=False)['Close']
+        
+        infos = {}
+        for t in ticker_list:
+            try:
+                tk = yf.Ticker(t)
+                inf = tk.info
+                # Sécurisation des valeurs N/A
+                infos[t] = {
+                    'target': inf.get('targetMeanPrice', 0) or 0,
+                    'payout': (inf.get('payoutRatio', 0) or 0) * 100
+                }
+            except Exception:
+                infos[t] = {'target': 0, 'payout': 0}
+        return df_history, infos
+    except Exception:
+        st.error("Impossible de joindre l'API boursière. Vérifiez votre connexion.")
+        return pd.DataFrame(), {}
 
+# Chargement
 tickers = list(st.session_state.mon_portefeuille.keys())
 df_prices, fund_data = load_financial_data(tickers)
+
+if df_prices.empty:
+    st.warning("Données indisponibles pour le moment.")
+    st.stop()
+
 last_prices = df_prices[tickers].iloc[-1]
 
 # ==========================================
@@ -51,7 +75,7 @@ total_div_annuel = sum(v['qte'] * v['div'] for v in st.session_state.mon_portefe
 total_div_5ans = total_div_annuel * 5
 diff_globale = total_actuel - total_achat
 
-# Calcul de la valuation cible totale (Targets)
+# Calcul Upside (Marge de hausse)
 total_target_valuation = 0
 valeur_actuelle_pour_upside = 0
 for t in tickers:
@@ -64,7 +88,7 @@ for t in tickers:
 upside_total = ((total_target_valuation / valeur_actuelle_pour_upside) - 1) * 100 if valeur_actuelle_pour_upside > 0 else 0
 
 # ==========================================
-# 4. INTERFACE STREAMLIT
+# 4. INTERFACE UTILISATEUR
 # ==========================================
 st.title("🚀 Tracker PEA : Objectif 5 ans")
 
@@ -77,25 +101,29 @@ m4.metric("Marge de hausse (Target)", f"+{upside_total:.1f} %")
 
 # --- GRAPHIQUE PERFORMANCE ---
 st.subheader("Comparaison Performance (Base 100)", divider="rainbow")
-weights = {t: (st.session_state.mon_portefeuille[t]['qte'] * st.session_state.mon_portefeuille[t]['pru']) / total_achat for t in tickers}
-port_idx = (df_prices[tickers].pct_change().dropna() @ pd.Series(weights)).add(1).cumprod() * 100
-cac_idx = df_prices['^FCHI'].pct_change().dropna().add(1).cumprod() * 100
-st.line_chart(pd.DataFrame({'Mon Portefeuille': port_idx, 'CAC 40': cac_idx}))
+try:
+    # Calcul pondéré de l'indice du portefeuille
+    weights = {t: (st.session_state.mon_portefeuille[t]['qte'] * st.session_state.mon_portefeuille[t]['pru']) / total_achat for t in tickers}
+    port_idx = (df_prices[tickers].pct_change().dropna() @ pd.Series(weights)).add(1).cumprod() * 100
+    cac_idx = df_prices['^FCHI'].pct_change().dropna().add(1).cumprod() * 100
+    
+    chart_data = pd.DataFrame({'Mon Portefeuille': port_idx, 'CAC 40': cac_idx})
+    st.line_chart(chart_data)
+except Exception:
+    st.info("Le graphique de performance sera disponible après quelques jours de cotations.")
 
 # --- ONGLETS D'ANALYSE ---
 tab_detail, tab_repart = st.tabs(["📋 Détail & Projection 5 ans", "🍕 Répartition"])
 
 with tab_detail:
-    st.info("💡 **Objectif (Target)** : Prix visé par les analystes. **PRU Net (5 ans)** : Votre prix de revient après encaissement de 5 ans de dividendes.")
+    st.info("💡 **Objectif (Target)** : Moyenne analystes. **PRU Net (5 ans)** : Prix de revient après dividendes cumulés.")
     
-    # Construction du tableau détaillé
     data_rows = []
     for t, v in st.session_state.mon_portefeuille.items():
         cours = last_prices[t]
         pru_initial = v['pru']
         div_annuel = v['div']
-        div_5ans_cumul = div_annuel * 5
-        pru_net_5ans = pru_initial - div_5ans_cumul
+        pru_net_5ans = pru_initial - (div_annuel * 5)
         target = fund_data[t]['target']
         upside = ((target / cours) - 1) * 100 if target > 0 else 0
         
@@ -106,14 +134,12 @@ with tab_detail:
             "Plus/Moins-Value": (cours - pru_initial) * v['qte'],
             "Objectif (Target)": target if target > 0 else 0,
             "Potentiel (%)": upside,
-            "Div. 5 ans": div_5ans_cumul * v['qte'],
+            "Div. 5 ans": div_annuel * 5 * v['qte'],
             "PRU Net (5 ans)": pru_net_5ans,
             "Rendement (YOC)": (div_annuel / pru_initial) * 100
         })
 
     df_positions = pd.DataFrame(data_rows)
-
-    # Ligne de TOTAL
     df_total = pd.DataFrame([{
         "Nom": "💰 TOTAL",
         "Cours": None,
@@ -128,27 +154,19 @@ with tab_detail:
 
     df_final = pd.concat([df_positions, df_total], ignore_index=True)
 
-    # Styles de couleurs
+    # Styling
     def style_positive(val):
         if isinstance(val, (int, float)):
             return f'color: {"#2ecc71" if val >= 0 else "#e74c3c"}; font-weight: bold'
         return ''
 
-    def style_pru_net(val):
-        return 'color: #3498db; font-weight: bold' if isinstance(val, (int, float)) else ''
-
     st.dataframe(
         df_final.style.applymap(style_positive, subset=['Plus/Moins-Value', 'Potentiel (%)'])
-        .applymap(style_pru_net, subset=['PRU Net (5 ans)'])
         .format({
-            "Cours": "{:.2f} €", 
-            "PRU Initial": "{:.2f} €", 
-            "Plus/Moins-Value": "{:.2f} €",
+            "Cours": "{:.2f} €", "PRU Initial": "{:.2f} €", "Plus/Moins-Value": "{:.2f} €",
             "Objectif (Target)": lambda x: f"{x:.2f} €" if (x and x > 0) else "N/A",
-            "Potentiel (%)": "+{:.1f} %",
-            "Div. 5 ans": "{:.2f} €", 
-            "PRU Net (5 ans)": "{:.2f} €",
-            "Rendement (YOC)": "{:.2f} %"
+            "Potentiel (%)": "+{:.1f} %", "Div. 5 ans": "{:.2f} €", 
+            "PRU Net (5 ans)": "{:.2f} €", "Rendement (YOC)": "{:.2f} %"
         }, na_rep="-"),
         use_container_width=True, hide_index=True
     )
@@ -156,12 +174,16 @@ with tab_detail:
 with tab_repart:
     col1, col2 = st.columns(2)
     with col1:
-        df_act = pd.DataFrame({'Action': [v['nom'] for v in st.session_state.mon_portefeuille.values()], 
-                               'Valeur': [st.session_state.mon_portefeuille[t]['qte'] * last_prices[t] for t in tickers]})
+        df_act = pd.DataFrame({
+            'Action': [v['nom'] for v in st.session_state.mon_portefeuille.values()], 
+            'Valeur': [st.session_state.mon_portefeuille[t]['qte'] * last_prices[t] for t in tickers]
+        })
         st.plotly_chart(px.pie(df_act, values='Valeur', names='Action', title="Poids des lignes", hole=0.4, template="plotly_dark"), use_container_width=True)
     with col2:
-        df_sect = pd.DataFrame({'Secteur': [v['secteur'] for v in st.session_state.mon_portefeuille.values()], 
-                                'Valeur': [st.session_state.mon_portefeuille[t]['qte'] * last_prices[t] for t in tickers]}).groupby('Secteur').sum().reset_index()
+        df_sect = pd.DataFrame({
+            'Secteur': [v['secteur'] for v in st.session_state.mon_portefeuille.values()], 
+            'Valeur': [st.session_state.mon_portefeuille[t]['qte'] * last_prices[t] for t in tickers]
+        }).groupby('Secteur').sum().reset_index()
         st.plotly_chart(px.pie(df_sect, values='Valeur', names='Secteur', title="Répartition Sectorielle", template="plotly_dark"), use_container_width=True)
 
 # Barre latérale
@@ -170,3 +192,5 @@ with st.sidebar:
     if st.button("Actualiser les données"):
         st.cache_data.clear()
         st.rerun()
+    st.write("---")
+    st.caption(f"Dernière mise à jour : {datetime.now().strftime('%H:%M:%S')}")
