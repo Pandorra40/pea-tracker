@@ -1,0 +1,13 @@
+# Empêche GitHub de stocker vos secrets
+.env
+
+# Empêche l'accès à l'historique de configuration Git
+.git/
+.gitignore
+
+# Empêche la fuite des fichiers de configuration Streamlit
+.streamlit/
+
+# Fichiers système inutiles
+__pycache__/
+*.py[cod]
